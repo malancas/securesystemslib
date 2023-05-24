@@ -27,8 +27,7 @@ class AzureSigner(Signer):
     Arguments:
         az_keyvaultid: Fully qualified Azure Key Vault name, like
             azurekms://<vault-name>.vault.azure.net
-        az_keyid: Fully qualified Azure Key Vault key name, like
-            azurekms://<vault-name>.vault.azure.net/<key-name>
+        az_keyid: Name of the key in the vault, like foo-key
 
     Raises:
         Various errors from azure.identity
