@@ -5,6 +5,7 @@ import binascii
 from typing import Optional, Tuple
 from urllib import parse
 
+import re
 import logging
 import securesystemslib.hash as sslib_hash
 from securesystemslib.signer._key import Key
@@ -73,8 +74,7 @@ class AzureSigner(Signer):
 
         try:
             credential = DefaultAzureCredential()
-            vault_url, key_name = self._vault_url_and_key(az_key_uri)
-            key_vault_key = self._get_key_vault_key(credential, key_name, vault_url)
+            key_vault_key = self._get_key_vault_key(credential, az_key_uri)
             self.signature_algorithm = self._get_signature_algorithm(key_vault_key)
             self.hash_algorithm = self._get_hash_algorithm(key_vault_key)
             self.crypto_client = self._create_crypto_client(credential, key_vault_key)
@@ -83,24 +83,37 @@ class AzureSigner(Signer):
             raise e
 
     @staticmethod
-    def _vault_url_and_key(az_key_uri: str) -> Tuple[str, str]:
-            # Extract the vault uri and key name.
-            # Format is: azurekms://<vault-name>.vault.azure.net/<key-name>
-            (az_vault_uri, az_key_name) = az_key_uri.rsplit("/", 1)
+    def _get_key_vault_key(cred: DefaultAzureCredential, az_key_uri: str) -> KeyVaultKey:
+        # Format is one of:
+        # - azurekms://<vault-name>.vault.azure.net/<key-name>
+        # - azurekms://<vault-name>.vault.azure.net/keys/<key-name>/<version>
+        if not az_key_uri.startswith("azurekms://"):
+            raise ValueError(f"Invalid key URI {az_key_uri}")
 
-            if not az_vault_uri.startswith("azurekms://"):
+        # Scheme is azurekms:// but key client expects https://
+        az_key_url = az_key_uri.replace("azurekms:", "https:")
+
+        p_ver = re.compile('(https://[a-zA-Z0-9\.\-]+)/keys/([a-zA-z0-9\-]+)/([a-f0-9]{32})')
+        p_simple = re.compile('(https://[a-zA-Z0-9\.\-]+)/([a-zA-z0-9\-]+)')
+
+        m = p_ver.match(az_key_url)
+        if m:
+            vault_url = m.group(1)
+            key_name = m.group(2)
+            version = m.group(3)
+        else:
+            m = p_simple.match(az_key_url)
+            if m:
+                vault_url = m.group(1)
+                key_name = m.group(2)
+                version = None
+            else:
+                print("yolo")
                 raise ValueError(f"Invalid key URI {az_key_uri}")
 
-            # az vault is on form: azurekms:// but key client expects https://
-            vault_url = az_vault_uri.replace("azurekms:", "https:")
-
-            return vault_url, az_key_name
-
-    @staticmethod
-    def _get_key_vault_key(cred: DefaultAzureCredential, az_keyid: str, vault_url: str) -> KeyVaultKey:
         try:
             key_client = KeyClient(vault_url=vault_url, credential=cred)
-            return key_client.get_key(az_keyid)
+            return key_client.get_key(key_name, version)
         except (
             HttpResponseError,
         ) as e:
@@ -171,7 +184,7 @@ class AzureSigner(Signer):
         return cls(priv_key_uri, public_key)
 
     @classmethod
-    def import_(cls, az_key_uri: str) -> Tuple[str, Key]:
+    def import_(cls, az_vault_name: str, az_key_name: str) -> Tuple[str, Key]:
         """Load key and signer details from KMS
 
         Returns the private key uri and the public key. This method should only
@@ -180,9 +193,9 @@ class AzureSigner(Signer):
         if AZURE_IMPORT_ERROR:
             raise exceptions.UnsupportedLibraryError(AZURE_IMPORT_ERROR)
 
-        vault_url, key_name = cls._vault_url_and_key(az_key_uri)
+        az_key_uri = f"azurekms://{az_vault_name}.vault.azure.net/{az_key_name}"
         credential = DefaultAzureCredential()
-        key_vault_key = cls._get_key_vault_key(credential, key_name, vault_url)
+        key_vault_key = cls._get_key_vault_key(credential, az_key_uri)
 
         if key_vault_key.key.kty != "EC-HSM":
             raise UnsupportedKeyType(f"Unsupported key type {key_vault_key.key.kty}")
